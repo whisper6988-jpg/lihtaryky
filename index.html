@@ -370,8 +370,14 @@ async function run(record){
         const name='lihtaryky-'+Date.now()+'.'+ext;
         $('#out').src=S.outUrl; S.name=name;
         $('#rinfo').textContent=ext.toUpperCase()+' · '+(blob.size/1048576).toFixed(1)+' МБ · '+W+'×'+H+(ext==='webm'?' · WebM не відкривається в Галереї iPhone':'');
-        let canShare=false; if(!S.dls){try{canShare=!!(navigator.canShare&&navigator.canShare({files:[new File([blob],name,{type})]}))}catch(e){}}
+        S.file=new File([blob],name,{type});   // готуємо заздалегідь: share() має стартувати одразу в межах дотику
+        let canShare=false; if(!S.dls){try{canShare=!!(navigator.canShare&&navigator.canShare({files:[S.file]}))}catch(e){}}
+        S.shareMode=canShare;
+        // iPhone/Android: головна кнопка відкриває системне меню («Зберегти відео» → Фото); завантаження файлу — запасний шлях
+        $('#dl').textContent=canShare?'Зберегти у Фото / Поділитися':'Зберегти відео';
+        $('#share').textContent='Завантажити файл';
         $('#share').classList.toggle('hide',!canShare);
+        if(canShare)$('#rinfo').textContent+=' · у меню натисни «Зберегти відео»';
         $('#result').style.display='block';
         $('#result').scrollIntoView({behavior:'smooth',block:'start'});
       }
@@ -411,14 +417,20 @@ async function save(){
       else status('Не вдалося зберегти: '+(e&&e.message||c),true);}
     return;
   }
-  const a=document.createElement('a');a.href=S.outUrl;a.download=S.name;document.body.appendChild(a);a.click();a.remove();
+  if(S.shareMode)return shareFile();
+  download();
+}
+function download(){const a=document.createElement('a');a.href=S.outUrl;a.download=S.name;document.body.appendChild(a);a.click();a.remove();}
+function shareFile(){
+  // лише files, без title/text: з текстом iOS інколи ховає пункт «Зберегти відео»
+  navigator.share({files:[S.file]}).then(()=>status('')).catch(e=>{
+    if(e&&e.name==='AbortError')return;
+    status('Меню «Поділитися» не відкрилось ('+(e&&e.name||'помилка')+'). Спробуй «Завантажити файл».',true);
+  });
 }
 $('#dl').onclick=save;
 (async()=>{try{if(window.claude&&window.claude.use){const d=await window.claude.use('downloads');if(d){S.dls=d;$('#share').classList.add('hide');}}}catch(e){}})();
-$('#share').onclick=async()=>{
-  try{await navigator.share({files:[new File([S.blob],S.name,{type:S.blob.type})],title:'Ліхтарики'})}
-  catch(e){if(e&&e.name!=='AbortError')status('Не вдалося поділитися: '+e.message,true)}
-};
+$('#share').onclick=download;
 document.addEventListener('visibilitychange',()=>{if(document.hidden&&S.run&&$('#play').textContent.startsWith('■'))stopRun()});
 
 setMedia(2,null);
