@@ -24,6 +24,13 @@ h1 span{color:var(--accent)}
 .ph{color:#aab2c0;text-align:center;font-size:13px;padding:10px;line-height:1.35}
 .ph b{display:block;font-size:26px;line-height:1;margin-bottom:6px;color:var(--accent)}
 .badge{position:absolute;left:6px;bottom:6px;background:rgba(0,0,0,.7);color:#fff;font-size:11px;padding:2px 7px;border-radius:6px;pointer-events:none}
+.aud{display:flex;align-items:center;gap:10px;margin-top:12px;padding:10px 12px;border:2px dashed var(--line);border-radius:12px;cursor:pointer}
+.aud.has{border-style:solid}
+.aud.over{border-color:var(--accent)}
+.aud b{color:var(--accent);font-size:22px;line-height:1}
+.aud .at{flex:1;min-width:0;font-size:14px;overflow-wrap:anywhere}
+.aud .at small{display:block;color:var(--muted);font-size:12px}
+.aud .xa{width:30px;height:30px;border-radius:50%;border:1px solid var(--line);background:transparent;color:var(--text);font-size:17px;line-height:28px;padding:0;cursor:pointer}
 .x{position:absolute;right:6px;top:6px;width:30px;height:30px;border-radius:50%;border:0;background:rgba(0,0,0,.7);color:#fff;font-size:17px;line-height:30px;padding:0;cursor:pointer}
 textarea{display:block;width:100%;margin-top:8px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:10px;padding:9px 10px;font:inherit;font-size:16px;resize:vertical;min-height:44px}
 #info{font-size:13px;color:var(--muted);margin-top:10px}
@@ -72,6 +79,12 @@ textarea{display:block;width:100%;margin-top:8px;background:var(--bg);color:var(
     </div>
     <input type="file" id="f1" accept="video/*,image/*" hidden>
     <input type="file" id="f2" accept="video/*,image/*" hidden>
+    <div class="aud" id="aud">
+      <b id="audIco">♪</b>
+      <div class="at" id="audT">Власне аудіо (необов'язково)<small>Почнеться через 1 с після появи 2 кадру, пісня на цей час притихне</small></div>
+      <button class="xa hide" id="xa" title="Прибрати аудіо">×</button>
+    </div>
+    <input type="file" id="fa" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav,.ogg,.opus" hidden>
     <div id="info"></div>
   </div>
 
@@ -114,7 +127,8 @@ function b64blob(id,type){
 const DEF_V2=URL.createObjectURL(b64blob('dv','video/mp4'));
 const SONG=b64blob('ds','audio/mpeg');
 
-const S={ac:null,song:null,songDur:15.151,run:null,focus:1};
+const VO_DELAY=1, DUCK=0.2, DUCK_FADE=0.3;   // власне аудіо: +1 с після 2 кадру; пісня до 20 % гучності; плавність 0.3 с
+const S={ac:null,vo:null,voName:'',song:null,songDur:15.151,run:null,focus:1};
 const M={1:{},2:{}};
 const cv=$('#main'), ctx=cv.getContext('2d');
 
@@ -162,7 +176,9 @@ function plan(){
   const d1=!has1?0:(m1.kind==='image'?SWITCH:Math.min(SWITCH,m1.dur));
   const off=SWITCH-d1;                 // зсув від початку пісні
   const s2=has1?FA:SWITCH;             // коли стартує 2 кадр (час пісні)
-  return{has1,d1,off,s2,end:S.songDur,len:S.songDur-off};
+  const vs=SWITCH+VO_DELAY;           // 2 кадр стає основним на 5-й секунді пісні (і коли 1 кадру нема)
+  const vd=S.vo?Math.max(0,Math.min(S.vo.duration,S.songDur-vs)):0;
+  return{has1,d1,off,s2,end:S.songDur,len:S.songDur-off,vs,vd};
 }
 function outSize(){
   const m=M[2]; const w=m.w||1736,h=m.h||720, k=MAXSIDE/Math.max(w,h);
@@ -245,6 +261,11 @@ function refresh(){
   $('#info').textContent=p.has1
     ? 'Готове відео: '+p.len.toFixed(1)+' с · 1 кадр '+p.d1.toFixed(1)+' с · перехід на '+p.d1.toFixed(1)+' с'+(p.off>0.05?' (початок обрізано на '+p.off.toFixed(1)+' с)':'')
     : 'Готове відео: '+p.len.toFixed(1)+' с · лише 2 кадр, пісня з 5-ї секунди';
+  if(S.vo){const at=(p.vs-p.off), cut=S.vo.duration>p.vd+0.05;
+    $('#audT').innerHTML='';const n=document.createElement('span');n.textContent=S.voName;const sm=document.createElement('small');
+    sm.textContent=S.vo.duration.toFixed(1)+' с · грає з '+at.toFixed(1)+' с до '+(at+p.vd).toFixed(1)+' с'+(cut?' (обріжеться разом з відео)':'');
+    $('#audT').append(n,sm);}
+  $('#aud').classList.toggle('has',!!S.vo); $('#xa').classList.toggle('hide',!S.vo);
   if(!S.run){
     if(cv.width!==W||cv.height!==H){cv.width=W;cv.height=H;}
     ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
@@ -318,9 +339,19 @@ async function run(record){
       rec.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
       stopped=new Promise(r=>rec.onstop=r);
     }
-    src=ac.createBufferSource(); src.buffer=S.song; src.connect(g);
+    const sg=ac.createGain(); sg.connect(g);
+    src=ac.createBufferSource(); src.buffer=S.song; src.connect(sg);
     const t0=ac.currentTime+0.12;
     src.start(t0,p.off);
+    if(S.vo&&p.vd>0.05){
+      const vsA=t0+(p.vs-p.off), veA=vsA+p.vd;           // час AudioContext
+      const vsrc=ac.createBufferSource(); vsrc.buffer=S.vo; vsrc.connect(g);
+      vsrc.start(vsA,0,p.vd);
+      const G=sg.gain; G.setValueAtTime(1,t0);
+      G.setValueAtTime(1,Math.max(t0,vsA-DUCK_FADE)); G.linearRampToValueAtTime(DUCK,vsA);   // пісня притихає до початку голосу
+      G.setValueAtTime(DUCK,veA); G.linearRampToValueAtTime(1,veA+DUCK_FADE);                 // і повертається після
+      S.vsrc=vsrc;
+    }
     let recOn=false;
     S.run.src=src; S.run.vids=[v1,v2];
     status(record?'Записую… не згортай вкладку і не блокуй екран':'Відтворення');
@@ -356,6 +387,7 @@ async function run(record){
     });
     const cancelled=S.run!==id;
     try{src.stop()}catch(e){}
+    try{S.vsrc&&S.vsrc.stop()}catch(e){} S.vsrc=null;
     for(const v of [v1,v2])if(v)v.pause();
     if(rec){
       if(rec.state!=='inactive')rec.stop(); await stopped;
@@ -386,6 +418,7 @@ async function run(record){
   }catch(e){
     console.error(e); status('Помилка: '+(e&&e.message||e),true);
     try{src&&src.stop()}catch(_){}
+    try{S.vsrc&&S.vsrc.stop()}catch(_){} S.vsrc=null;
     try{rec&&rec.state!=='inactive'&&rec.stop()}catch(_){}
   }finally{
     try{keep&&keep.stop()}catch(_){}
@@ -395,7 +428,25 @@ async function run(record){
     refresh();
   }
 }
-function stopRun(){const r=S.run;S.run=null;if(r&&r.src)try{r.src.stop()}catch(e){}}
+function stopRun(){const r=S.run;S.run=null;if(r&&r.src)try{r.src.stop()}catch(e){}try{S.vsrc&&S.vsrc.stop()}catch(e){}}
+// ---------- власне аудіо
+async function setVoice(file){
+  if(S.run)return;
+  if(!file){S.vo=null;S.voName='';$('#audT').innerHTML="Власне аудіо (необов'язково)<small>Почнеться через 1 с після появи 2 кадру, пісня на цей час притихне</small>";refresh();return;}
+  $('#audT').innerHTML='';const t=document.createElement('span');t.textContent='Обробляю «'+file.name+'»…';$('#audT').append(t);
+  try{
+    if(!S.ac){const AC=window.AudioContext||window.webkitAudioContext;S.ac=new AC();}
+    S.vo=await decode(S.ac,await blobBuf(file)); S.voName=file.name; status('');
+  }catch(e){S.vo=null;S.voName='';status('Не вдалося прочитати аудіо «'+file.name+'». Спробуй MP3, M4A або WAV.',true);setVoice(null);return;}
+  refresh();
+}
+{const a=$('#aud'),fa=$('#fa');
+ a.addEventListener('click',e=>{if(e.target.closest('.xa')||S.run)return;fa.click()});
+ fa.addEventListener('change',()=>{if(fa.files[0])setVoice(fa.files[0]);fa.value=''});
+ $('#xa').addEventListener('click',e=>{e.stopPropagation();setVoice(null)});
+ a.addEventListener('dragover',e=>{e.preventDefault();a.classList.add('over')});
+ a.addEventListener('dragleave',()=>a.classList.remove('over'));
+ a.addEventListener('drop',e=>{e.preventDefault();a.classList.remove('over');const f=e.dataTransfer.files[0];if(f)setVoice(f)});}
 // iOS: розблокувати відео та звук синхронно в межах дотику (енергозбереження блокує автоплей навіть без звуку)
 function unlock(){
   try{if(navigator.audioSession)navigator.audioSession.type='playback'}catch(e){}   // грати навіть у беззвучному режимі (Safari 16.4+)
