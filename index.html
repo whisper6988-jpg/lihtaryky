@@ -84,7 +84,7 @@ textarea{display:block;width:100%;margin-top:8px;background:var(--bg);color:var(
       <div class="at" id="audT">Власне аудіо (необов'язково)<small>Почнеться через 1 с після появи 2 кадру, пісня на цей час притихне</small></div>
       <button class="xa hide" id="xa" title="Прибрати аудіо">×</button>
     </div>
-    <input type="file" id="fa" accept="audio/*,video/*,.mp3,.m4a,.aac,.wav,.ogg,.opus" hidden>
+    <input type="file" id="fa" hidden>
     <div id="info"></div>
   </div>
 
@@ -433,12 +433,56 @@ function stopRun(){const r=S.run;S.run=null;if(r&&r.src)try{r.src.stop()}catch(e
 async function setVoice(file){
   if(S.run)return;
   if(!file){S.vo=null;S.voName='';$('#audT').innerHTML="Власне аудіо (необов'язково)<small>Почнеться через 1 с після появи 2 кадру, пісня на цей час притихне</small>";refresh();return;}
-  $('#audT').innerHTML='';const t=document.createElement('span');t.textContent='Обробляю «'+file.name+'»…';$('#audT').append(t);
+  const tok=S.voTok={}; const say=m=>{if(S.voTok!==tok)return;$('#audT').innerHTML='';const t=document.createElement('span');t.textContent=m;$('#audT').append(t)};
+  say('Обробляю «'+file.name+'»…');
+  let buf,ab=null;
   try{
     if(!S.ac){const AC=window.AudioContext||window.webkitAudioContext;S.ac=new AC();}
-    S.vo=await decode(S.ac,await blobBuf(file)); S.voName=file.name; status('');
-  }catch(e){S.vo=null;S.voName='';status('Не вдалося прочитати аудіо «'+file.name+'». Спробуй MP3, M4A або WAV.',true);setVoice(null);return;}
+    buf=await blobBuf(file);
+    if(!FORCE_FF){try{ab=await decode(S.ac,buf.slice(0))}catch(e){ab=null}}          // 1) вбудований декодер браузера
+    if(!ab||!ab.duration){                                                         // 2) FFmpeg у браузері: OGG, OPUS, AMR, WMA, FLAC, 3GP, MKV…
+      say('Формат незвичний — підвантажую декодер (~10 МБ, один раз)…');
+      const wav=await ffToWav(new Uint8Array(buf),pct=>say('Перетворюю «'+file.name+'»… '+pct+'%'));
+      ab=await decode(S.ac,wav.buffer);
+    }
+    if(S.voTok!==tok)return;
+    if(!ab||!ab.duration)throw new Error('порожнє аудіо');
+    S.vo=ab; S.voName=file.name; status('');
+  }catch(e){
+    if(S.voTok!==tok)return;
+    console.error(e); S.vo=null;S.voName='';
+    status('Не вдалося прочитати «'+file.name+'»: у файлі немає звуку, або він пошкоджений.'+(e&&/load|fetch|network|script/i.test(e.message||'')?' Декодер не завантажився — перевір інтернет.':''),true);
+    setVoice(null);return;
+  }
   refresh();
+}
+// ---------- FFmpeg (WebAssembly) як запасний декодер; вантажиться лише коли браузер не знає формату
+const FF_BASE='https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/umd/';
+const FORCE_FF=/[?&]ff=1/.test(location.search);
+function loadScript(src){return new Promise((res,rej)=>{const sc=document.createElement('script');sc.src=src;sc.async=true;sc.onload=res;sc.onerror=()=>rej(new Error('script load failed'));document.head.appendChild(sc)})}
+let ffCore=null;
+async function getFF(){
+  if(ffCore)return ffCore;
+  if(!window.createFFmpegCore)await loadScript(FF_BASE+'ffmpeg-core.js');
+  // ядро саме шукає wasm за адресою, закодованою після «#» у mainScriptUrlOrBlob
+  const cfg=btoa(JSON.stringify({wasmURL:FF_BASE+'ffmpeg-core.wasm',workerURL:''}));
+  ffCore=window.createFFmpegCore({mainScriptUrlOrBlob:FF_BASE+'ffmpeg-core.js#'+cfg}).catch(e=>{ffCore=null;throw e});
+  return ffCore;
+}
+async function ffToWav(bytes,onPct){
+  const ff=await getFF();
+  let dur=0;
+  ff.setLogger(({message})=>{const m=/Duration: (\d+):(\d+):([\d.]+)/.exec(message||'');if(m)dur=(+m[1])*3600+(+m[2])*60+(+m[3])});
+  ff.setProgress(({progress,time})=>{let p=progress>0&&progress<=1?progress:(dur&&time?time/1e6/dur:0);if(p>0)onPct&&onPct(Math.min(99,Math.round(p*100)))});
+  try{ff.FS.unlink('in')}catch(e){} try{ff.FS.unlink('out.wav')}catch(e){}
+  ff.FS.writeFile('in',bytes);
+  await new Promise(r=>setTimeout(r,30));          // дати браузеру намалювати статус перед важкою роботою
+  ff.exec('-i','in','-vn','-ac','2','-ar','48000','-c:a','pcm_s16le','-f','wav','out.wav');
+  let out; try{out=ff.FS.readFile('out.wav')}catch(e){out=null}
+  try{ff.FS.unlink('in')}catch(e){} try{ff.FS.unlink('out.wav')}catch(e){}
+  try{ff.reset()}catch(e){}
+  if(!out||out.length<100)throw new Error('ffmpeg: немає аудіодоріжки');
+  return out;
 }
 {const a=$('#aud'),fa=$('#fa');
  a.addEventListener('click',e=>{if(e.target.closest('.xa')||S.run)return;fa.click()});
